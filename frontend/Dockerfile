@@ -10,7 +10,8 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-RUN npm run build
+# Git omits an empty public directory; the runtime COPY must also work on a clean checkout.
+RUN mkdir -p public && npm run build
 
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production \
