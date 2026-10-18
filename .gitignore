@@ -1,0 +1,38 @@
+# Local secrets and developer settings
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.local.example
+backend/.env
+backend/.venv/
+frontend/.env.local
+
+# Generated runtime/build data
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/*.db
+backend/*.sqlite*
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.pytest-tmp/
+frontend/node_modules/
+frontend/.next/
+frontend/test-results/
+frontend/playwright-report/
+frontend/tsconfig.tsbuildinfo
+/tmp/
+backups/
+LOCAL_ADMIN_CREDENTIALS.txt
+
+# Personal application/preparation material is not part of the source submission.
+/*.pdf
+/JD newtonite.txt
+/challenge-guide-site/
+
+# Editors and operating systems
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

@@ -1,0 +1,92 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: workbench_e2e
+      POSTGRES_USER: workbench_e2e
+      POSTGRES_PASSWORD: playwright-only-db-password
+    volumes:
+      - e2e_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--requirepass", "playwright-only-redis-password", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-ttl"]
+    environment:
+      REDIS_PASSWORD: playwright-only-redis-password
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - data
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: production
+      PUBLIC_HOST: ":8080"
+      DATABASE_URL: postgresql+psycopg://workbench_e2e:playwright-only-db-password@db:5432/workbench_e2e
+      REDIS_URL: redis://:playwright-only-redis-password@redis:6379/0
+      SESSION_SECRET: "playwright-e2e-only-session-secret-keep-out-of-production-73dbbcb38bcb4eaf97c992b0ce"
+      COOKIE_HTTPS_ONLY: "false"
+      CORS_ORIGINS: http://localhost:3100
+      SEED_DEMO_DATA: "true"
+      API_WORKERS: "1"
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "5"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 25s
+    networks:
+      - data
+      - edge
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8001/api
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3100:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 25s
+    networks:
+      - edge
+
+networks:
+  data:
+    internal: true
+  edge:
+
+volumes:
+  e2e_postgres_data:
