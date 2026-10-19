@@ -5,7 +5,7 @@ import hashlib
 import json
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -35,11 +35,13 @@ ELEVATED_ROLES = {"lead", "admin"}
 
 
 def iso(value: datetime | None) -> str | None:
+    """Keep API timestamps explicitly UTC across PostgreSQL and SQLite."""
     if value is None:
         return None
     if value.tzinfo is None:
+        # SQLite drops timezone information from our UTC-only stored values.
         value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def user_payload(user: User) -> dict[str, str]:
@@ -111,6 +113,7 @@ def item_payload(item: WorkItem, db: Session, *, with_history: bool = False, use
         "owner": user_payload(owner) if owner else None,
         "created_by": user_payload(creator) if creator else None,
         "version": item.version,
+        "due_at": iso(item.due_at),
         "created_at": iso(item.created_at),
         "updated_at": iso(item.updated_at),
     }
@@ -367,7 +370,12 @@ def create_app(database_url: str | None = None, *, seed_data: bool | None = None
         idempotency_key = idempotency_key.strip()
         if not idempotency_key:
             raise HTTPException(status_code=422, detail={"code": "invalid_idempotency_key", "message": "Idempotency-Key cannot be blank."})
-        canonical_payload = json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        request_data = payload.model_dump(mode="json")
+        # Retain hashes for requests made before optional deadlines existed.
+        # Omitting a deadline and explicitly sending null have the same meaning.
+        if request_data["due_at"] is None:
+            request_data.pop("due_at")
+        canonical_payload = json.dumps(request_data, sort_keys=True, separators=(",", ":"))
         request_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
 
         existing = db.scalar(
@@ -379,18 +387,19 @@ def create_app(database_url: str | None = None, *, seed_data: bool | None = None
         if existing is not None:
             if existing.request_hash != request_hash:
                 raise HTTPException(status_code=409, detail={"code": "idempotency_key_reused", "message": "This Idempotency-Key was already used for a different request."})
-            return existing.response_body
+            return {"due_at": None, **existing.response_body}
 
         item = WorkItem(
             team_id=payload.team_id,
             title=payload.title,
             purpose=payload.purpose,
             priority=payload.priority,
+            due_at=payload.due_at,
             created_by=user.id,
         )
         db.add(item)
         db.flush()
-        add_activity(db, item.id, user.id, "created", {"title": item.title, "status": item.status, "priority": item.priority})
+        add_activity(db, item.id, user.id, "created", {"title": item.title, "status": item.status, "priority": item.priority, "due_at": iso(item.due_at)})
         response_body = item_payload(item, db)
         db.add(IdempotencyRecord(
             user_id=user.id,
@@ -412,7 +421,7 @@ def create_app(database_url: str | None = None, *, seed_data: bool | None = None
                 raise
             if existing.request_hash != request_hash:
                 raise HTTPException(status_code=409, detail={"code": "idempotency_key_reused", "message": "This Idempotency-Key was already used for a different request."})
-            return existing.response_body
+            return {"due_at": None, **existing.response_body}
         return response_body
 
     @application.get("/api/items")
@@ -422,6 +431,7 @@ def create_app(database_url: str | None = None, *, seed_data: bool | None = None
         status: str | None = Query(default=None),
         priority: str | None = Query(default=None),
         owner: str | None = Query(default=None),
+        deadline: str | None = Query(default=None),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=12, ge=1, le=50),
         user: User = Depends(authenticated_user),
@@ -446,6 +456,22 @@ def create_app(database_url: str | None = None, *, seed_data: bool | None = None
             query = query.where(WorkItem.owner_id.is_(None))
         elif owner:
             query = query.where(WorkItem.owner_id == owner)
+        if deadline:
+            deadline_now = now_utc()
+            if deadline == "overdue":
+                query = query.where(WorkItem.status != "done", WorkItem.due_at < deadline_now)
+            elif deadline == "due_soon":
+                query = query.where(
+                    WorkItem.status != "done",
+                    WorkItem.due_at >= deadline_now,
+                    WorkItem.due_at <= deadline_now + timedelta(hours=24),
+                )
+            elif deadline == "scheduled":
+                query = query.where(WorkItem.due_at.is_not(None))
+            elif deadline == "none":
+                query = query.where(WorkItem.due_at.is_(None))
+            else:
+                raise HTTPException(status_code=422, detail={"code": "invalid_filter", "message": "Unknown deadline filter."})
 
         total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
         items = db.scalars(query.order_by(WorkItem.updated_at.desc(), WorkItem.id).offset((page - 1) * page_size).limit(page_size)).all()
@@ -504,13 +530,17 @@ def create_app(database_url: str | None = None, *, seed_data: bool | None = None
         readable_changes: dict[str, dict[str, Any]] = {}
         for field, new_value in changes.items():
             old_value = getattr(item, field)
-            if old_value == new_value:
+            # SQLite returns naive UTC values; compare deadline instants in UTC.
+            unchanged = iso(old_value) == iso(new_value) if field == "due_at" else old_value == new_value
+            if unchanged:
                 continue
             before[field] = new_value
             if field == "owner_id":
                 old_owner = db.get(User, old_value) if old_value else None
                 new_owner = db.get(User, new_value) if new_value else None
                 readable_changes[field] = {"from": old_owner.full_name if old_owner else "Unassigned", "to": new_owner.full_name if new_owner else "Unassigned"}
+            elif field == "due_at":
+                readable_changes[field] = {"from": iso(old_value), "to": iso(new_value)}
             else:
                 readable_changes[field] = {"from": old_value, "to": new_value}
         if not before:

@@ -13,9 +13,13 @@ import WorkflowMap from "@/components/workflow-map";
 import ItemWorkflow from "@/components/item-workflow";
 import WorkBoard from "@/components/work-board";
 import Modal from "@/components/modal";
+import { TimeProvider, Timestamp, WorkspaceClock, useWorkspaceTime } from "@/components/time-system";
+import ItemDeadline from "@/components/item-deadline";
+import { formatTimestamp, localInputToUtc, toLocalInput } from "@/lib/datetime";
 
 const STATUS_OPTIONS: Status[] = ["open", "in_progress", "blocked", "in_review", "done"];
 const PRIORITY_OPTIONS: Priority[] = ["low", "medium", "high", "urgent"];
+const DEADLINE_LABELS: Record<string, string> = { overdue: "Overdue", due_soon: "Due within 24h", scheduled: "With due date", none: "No due date" };
 const NEXT_STATUSES: Record<Status, Status[]> = {
   open: ["in_progress"],
   in_progress: ["blocked", "in_review", "done"],
@@ -33,18 +37,15 @@ function initials(name?: string | null) {
   return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
-function shortDate(value: string) {
-  const date = new Date(value);
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function eventText(event: Activity) {
-  if (event.event_type === "created") return "created this work item";
+function eventText(event: Activity, timeZone: string) {
+  if (event.event_type === "created") return `created this work item${event.details.due_at ? ` · Due ${formatTimestamp(event.details.due_at, timeZone)}` : ""}`;
   if (event.event_type === "claimed") return `claimed this item${event.details.owner ? ` as ${event.details.owner}` : ""}`;
   if (event.event_type === "comment") return `left a note: “${event.details.content}”`;
-  const changes = event.details.changes as Record<string, { from: string; to: string }> | undefined;
+  const changes = event.details.changes as Record<string, { from: string | null; to: string | null }> | undefined;
   if (!changes) return "updated this item";
-  const descriptions = Object.entries(changes).map(([field, values]) => `${field === "owner_id" ? "Owner" : label(field)}: ${label(values.from)} → ${label(values.to)}`);
+  const descriptions = Object.entries(changes).map(([field, values]) => field === "due_at"
+    ? `Due date: ${values.from ? formatTimestamp(values.from, timeZone) : "No due date"} → ${values.to ? formatTimestamp(values.to, timeZone) : "No due date"}`
+    : `${field === "owner_id" ? "Owner" : label(field)}: ${label(values.from ?? "None")} → ${label(values.to ?? "None")}`);
   return `updated ${descriptions.join(" · ")}`;
 }
 
@@ -53,7 +54,12 @@ function readError(error: unknown, fallback: string) {
 }
 
 export default function WorkbenchPage() {
+  return <TimeProvider><Workbench /></TimeProvider>;
+}
+
+function Workbench() {
   const router = useRouter();
+  const { timeZone } = useWorkspaceTime();
   const requestNumber = useRef(0);
   const createIdempotencyKey = useRef<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -77,6 +83,8 @@ export default function WorkbenchPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("");
   const [ownerFilter, setOwnerFilter] = useState("");
+  const [deadlineFilter, setDeadlineFilter] = useState("");
+  const [queueLoadedAt, setQueueLoadedAt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -86,7 +94,7 @@ export default function WorkbenchPage() {
   const [detailError, setDetailError] = useState("");
   const [detailConflict, setDetailConflict] = useState("");
   const [detailReload, setDetailReload] = useState(0);
-  const [draft, setDraft] = useState<{ status: Status; priority: Priority; owner_id: string }>({ status: "open", priority: "medium", owner_id: "" });
+  const [draft, setDraft] = useState<{ status: Status; priority: Priority; owner_id: string; due_at: string }>({ status: "open", priority: "medium", owner_id: "", due_at: "" });
   const [comment, setComment] = useState("");
   const [commentBusy, setCommentBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
@@ -147,6 +155,7 @@ export default function WorkbenchPage() {
     if (statusFilter) params.set("status", statusFilter);
     if (priorityFilter) params.set("priority", priorityFilter);
     if (ownerFilter) params.set("owner", ownerFilter);
+    if (deadlineFilter) params.set("deadline", deadlineFilter);
     setLoading(true);
     setError("");
     Promise.all([
@@ -158,6 +167,7 @@ export default function WorkbenchPage() {
       setTotal(result.total);
       setTotalPages(result.total_pages);
       setSummary(counts);
+      setQueueLoadedAt(new Date().toISOString());
     }).catch((reason) => {
       if (!alive || requestNumber.current !== id) return;
       if (reason instanceof ApiError && reason.status === 401) router.replace("/login");
@@ -166,7 +176,13 @@ export default function WorkbenchPage() {
       if (alive && requestNumber.current === id) setLoading(false);
     });
     return () => { alive = false; };
-  }, [teamId, page, query, statusFilter, priorityFilter, ownerFilter, reloadKey, authLoading, router]);
+  }, [teamId, page, query, statusFilter, priorityFilter, ownerFilter, deadlineFilter, reloadKey, authLoading, router]);
+
+  useEffect(() => {
+    if (deadlineFilter !== "overdue" && deadlineFilter !== "due_soon") return;
+    const timer = window.setInterval(() => setReloadKey((value) => value + 1), 60_000);
+    return () => window.clearInterval(timer);
+  }, [deadlineFilter]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -176,7 +192,7 @@ export default function WorkbenchPage() {
     api<WorkItem>(`/items/${selectedId}`).then((current) => {
       if (!alive) return;
       setDetail(current);
-      setDraft({ status: current.status, priority: current.priority, owner_id: current.owner_id ?? "" });
+      setDraft({ status: current.status, priority: current.priority, owner_id: current.owner_id ?? "", due_at: toLocalInput(current.due_at) });
     }).catch((reason) => {
       if (alive) setDetailError(readError(reason, "Work item details could not be loaded."));
     }).finally(() => { if (alive) setDetailLoading(false); });
@@ -190,6 +206,7 @@ export default function WorkbenchPage() {
 
   function setQuickFilter(kind: "urgent" | "blocked" | "unassigned") {
     setPage(1);
+    setDeadlineFilter("");
     if (kind === "urgent") {
       setPriorityFilter((value) => value === "urgent" ? "" : "urgent");
       setStatusFilter("");
@@ -211,6 +228,7 @@ export default function WorkbenchPage() {
     setQuery("");
     setPriorityFilter("");
     setOwnerFilter("");
+    setDeadlineFilter("");
     setStatusFilter((current) => current === status ? "" : status);
   }
 
@@ -220,6 +238,11 @@ export default function WorkbenchPage() {
     if (draft.status !== detail.status) patch.status = draft.status;
     if (draft.priority !== detail.priority) patch.priority = draft.priority;
     if (draft.owner_id !== (detail.owner_id ?? "")) patch.owner_id = draft.owner_id || null;
+    // Keep the original instant (including seconds and a possible repeated DST hour) when unchanged.
+    if (draft.due_at !== toLocalInput(detail.due_at)) {
+      try { patch.due_at = localInputToUtc(draft.due_at); }
+      catch (reason) { setDetailError(reason instanceof Error ? reason.message : "Choose a valid due date."); return; }
+    }
     if (Object.keys(patch).length === 1) { notify("There are no changes to save.", "error"); return; }
     setSaveBusy(true);
     setDetailError("");
@@ -310,11 +333,19 @@ export default function WorkbenchPage() {
     setCreateError("");
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    let dueAt: string | null;
+    try { dueAt = localInputToUtc(String(form.get("due_at") ?? "")); }
+    catch (reason) {
+      setCreateError(reason instanceof Error ? reason.message : "Choose a valid due date.");
+      setCreateBusy(false);
+      return;
+    }
     const payload = {
       team_id: selectedTeam.id,
       title: String(form.get("title") ?? "").trim(),
       purpose: String(form.get("purpose") ?? "").trim(),
       priority: String(form.get("priority") ?? "medium"),
+      due_at: dueAt,
     };
     const idempotencyKey = createIdempotencyKey.current ?? crypto.randomUUID();
     createIdempotencyKey.current = idempotencyKey;
@@ -330,6 +361,7 @@ export default function WorkbenchPage() {
       setStatusFilter("");
       setPriorityFilter("");
       setOwnerFilter("");
+      setDeadlineFilter("");
       setSearchDraft("");
       setQuery("");
       setPage(1);
@@ -353,7 +385,7 @@ export default function WorkbenchPage() {
       <aside className="sidebar">
         <div className="brand"><div className="brand-mark">N</div><div className="brand-copy"><div className="brand-name">Newtonite</div><div className="brand-caption">Operations workbench</div></div></div>
         <div className="nav-label">Workspace</div>
-        <button className="nav-item active" type="button" onClick={() => { setSearchDraft(""); setQuery(""); setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setPage(1); }}><ClipboardList size={16} /><span>Work queue</span></button>
+        <button className="nav-item active" type="button" onClick={() => { setSearchDraft(""); setQuery(""); setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setDeadlineFilter(""); setPage(1); }}><ClipboardList size={16} /><span>Work queue</span></button>
         <div className="sidebar-note"><span className="sidebar-note-icon"><Sparkles size={16} /></span><strong>Clarity under pressure.</strong><p>One place for your team’s work, decisions, and next steps.</p><span className="sidebar-note-status"><i />Ready for what’s next</span></div>
         <div className="sidebar-bottom">
           <div className="nav-label">Current team</div>
@@ -370,12 +402,12 @@ export default function WorkbenchPage() {
 
         <section className="content">
           <div className="page-heading">
-            <div><div className="eyebrow"><span className="workspace-badge">Operations workspace</span><span>{new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(new Date())}</span></div><h1 className="page-title">Work that needs <em>you.</em></h1><p className="page-subtitle">Clear ownership. Shared context. A next step for every item.</p></div>
-            <button className="primary-button lime" onClick={openCreateForm} type="button"><Plus size={15} /> New work item</button>
+            <div><div className="eyebrow"><span className="workspace-badge">Operations workspace</span></div><h1 className="page-title">Work that needs <em>you.</em></h1><p className="page-subtitle">Clear ownership. Shared context. A next step for every item.</p></div>
+            <div className="heading-actions"><WorkspaceClock /><button className="primary-button lime" onClick={openCreateForm} type="button"><Plus size={15} /> New work item</button></div>
           </div>
 
           <div className="stats-grid">
-            <button className="stat-card" onClick={() => { setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setPage(1); }} type="button"><span className="stat-label"><Layers3 size={13} /> Active work</span><strong className="stat-value">{summary.active}<small>in this team</small></strong></button>
+            <button className="stat-card" onClick={() => { setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setDeadlineFilter(""); setPage(1); }} type="button"><span className="stat-label"><Layers3 size={13} /> Active work</span><strong className="stat-value">{summary.active}<small>in this team</small></strong></button>
             <button className="stat-card tone-urgent" onClick={() => setQuickFilter("urgent")} type="button"><span className="stat-label"><ArrowUpRight size={13} /> Urgent priority</span><strong className="stat-value">{summary.urgent}<small>need a close look</small></strong></button>
             <button className="stat-card tone-blocked" onClick={() => setQuickFilter("blocked")} type="button"><span className="stat-label"><AlertCircle size={13} /> Blocked</span><strong className="stat-value">{summary.blocked}<small>waiting on a next step</small></strong></button>
             <button className="stat-card tone-unassigned" onClick={() => setQuickFilter("unassigned")} type="button"><span className="stat-label"><UserRound size={13} /> Unassigned</span><strong className="stat-value">{summary.unassigned}<small>ready to be picked up</small></strong></button>
@@ -395,18 +427,19 @@ export default function WorkbenchPage() {
                 <select className="filter-select" aria-label="Filter by status" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }}><option value="">All statuses</option>{STATUS_OPTIONS.map((status) => <option key={status} value={status}>{label(status)}</option>)}</select>
                 <select className="filter-select" aria-label="Filter by priority" value={priorityFilter} onChange={(event) => { setPriorityFilter(event.target.value); setPage(1); }}><option value="">All priorities</option>{PRIORITY_OPTIONS.map((priority) => <option key={priority} value={priority}>{label(priority)}</option>)}</select>
                 <select className="filter-select" aria-label="Filter by owner" value={ownerFilter} onChange={(event) => { setOwnerFilter(event.target.value); setPage(1); }}><option value="">Everyone</option><option value="mine">Assigned to me</option><option value="unassigned">Unassigned</option></select>
+                <select className="filter-select" aria-label="Filter by deadline" value={deadlineFilter} onChange={(event) => { setDeadlineFilter(event.target.value); setPage(1); }}><option value="">All due dates</option><option value="overdue">Overdue</option><option value="due_soon">Due within 24h</option><option value="scheduled">With due date</option><option value="none">No due date</option></select>
               </div>
             </div>
 
             {error && <div className="inline-error" role="alert">{error} <button className="secondary-button" style={{ minHeight: 27, marginLeft: 8 }} onClick={() => setReloadKey((value) => value + 1)} type="button"><RefreshCw size={12} /> Retry</button></div>}
-            {(query || statusFilter || priorityFilter || ownerFilter) && <div className="active-filters"><span>Focused view</span>{query && <b>“{query}”</b>}{statusFilter && <b>{label(statusFilter)}</b>}{priorityFilter && <b>{label(priorityFilter)} priority</b>}{ownerFilter && <b>{label(ownerFilter)}</b>}<button type="button" onClick={() => { setSearchDraft(""); setQuery(""); setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setPage(1); }}><X size={12} />Clear filters</button></div>}
+            {(query || statusFilter || priorityFilter || ownerFilter || deadlineFilter) && <div className="active-filters"><span>Focused view</span>{query && <b>“{query}”</b>}{statusFilter && <b>{label(statusFilter)}</b>}{priorityFilter && <b>{label(priorityFilter)} priority</b>}{ownerFilter && <b>{label(ownerFilter)}</b>}{deadlineFilter && <b>{DEADLINE_LABELS[deadlineFilter]}</b>}<button type="button" onClick={() => { setSearchDraft(""); setQuery(""); setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setDeadlineFilter(""); setPage(1); }}><X size={12} />Clear filters</button></div>}
             {view === "list" && <div className="table-head"><span>Work item</span><span>Status</span><span>Priority</span><span>Owner</span><span /></div>}
             {view === "board" && <p className="board-page-note">Board shows the current page of results. Use filters or pagination to explore more work.</p>}
             {loading && <div className="loading-state"><div className="spinner" /><span style={{ marginTop: 11, fontSize: 11 }}>Loading your team’s work…</span></div>}
-            {!loading && !error && items.length === 0 && <div className="empty-state"><div className="empty-icon"><Sparkles size={19} /></div><strong>{query || statusFilter || priorityFilter || ownerFilter ? "No work matches these filters" : "Your queue is clear"}</strong><p>{query || statusFilter || priorityFilter || ownerFilter ? "Try a different search or remove one of the filters." : "Create a work item to give the team a shared place to start."}</p>{query || statusFilter || priorityFilter || ownerFilter ? <button className="secondary-button" onClick={() => { setSearchDraft(""); setQuery(""); setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); }} type="button"><X size={13} /> Clear filters</button> : <button className="primary-button" onClick={openCreateForm} type="button"><Plus size={14} /> Create first item</button>}</div>}
+            {!loading && !error && items.length === 0 && <div className="empty-state"><div className="empty-icon"><Sparkles size={19} /></div><strong>{query || statusFilter || priorityFilter || ownerFilter || deadlineFilter ? "No work matches these filters" : "Your queue is clear"}</strong><p>{query || statusFilter || priorityFilter || ownerFilter || deadlineFilter ? "Try a different search or remove one of the filters." : "Create a work item to give the team a shared place to start."}</p>{query || statusFilter || priorityFilter || ownerFilter || deadlineFilter ? <button className="secondary-button" onClick={() => { setSearchDraft(""); setQuery(""); setStatusFilter(""); setPriorityFilter(""); setOwnerFilter(""); setDeadlineFilter(""); setPage(1); }} type="button"><X size={13} /> Clear filters</button> : <button className="primary-button" onClick={openCreateForm} type="button"><Plus size={14} /> Create first item</button>}</div>}
             {!loading && !error && items.length > 0 && view === "board" && <WorkBoard items={items} onOpen={openWorkItem} />}
             {!loading && !error && items.length > 0 && view === "list" && <div>{items.map((item) => <button className={`item-row item-row-${item.priority}`} key={item.id} type="button" onClick={() => openWorkItem(item.id)}>
-              <span className="item-title"><span className="item-type-mark"><FileText size={14} /></span><span className="item-title-copy"><strong>{item.title}</strong><span>{item.purpose}</span></span></span>
+              <span className="item-title"><span className="item-type-mark"><FileText size={14} /></span><span className="item-title-copy"><strong>{item.title}</strong><span>{item.purpose}</span><span className="item-updated">Updated <Timestamp value={item.updated_at} relative /></span><ItemDeadline dueAt={item.due_at} status={item.status} /></span></span>
               <span className="item-status-view"><ItemWorkflow status={item.status} /><span className={`status-pill status-${item.status}`}>{label(item.status)}</span></span>
               <span className={`priority-pill priority-${item.priority}`}>{label(item.priority)}</span>
               <span className="owner-cell">{item.owner ? <><span className="avatar">{initials(item.owner.full_name)}</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.owner.full_name.split(" ")[0]}</span></> : <span className="unassigned">Unassigned</span>}</span>
@@ -414,7 +447,7 @@ export default function WorkbenchPage() {
             </button>)}</div>}
             {!loading && !error && items.length > 0 && <div className="list-footer"><span>Showing {(page - 1) * 12 + 1}–{Math.min(page * 12, total)} of {total} items</span><div className="pagination"><button className="page-button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} type="button" aria-label="Previous page"><ChevronLeft size={14} /></button><span className="page-indicator">{page} / {Math.max(totalPages, 1)}</span><button className="page-button" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)} type="button" aria-label="Next page"><ChevronRight size={14} /></button></div></div>}
           </section>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 13, color: "#a0aaa5", fontSize: 9 }}><ShieldCheck size={12} /> Access is checked by the server for every team and work item.</div>
+          <div className="workspace-footnote"><span><ShieldCheck size={12} /> Access is checked by the server for every team and work item.</span>{queueLoadedAt && <span>Refreshed <Timestamp value={queueLoadedAt} relative /></span>}</div>
         </section>
       </div>
 
@@ -425,6 +458,7 @@ export default function WorkbenchPage() {
           <div className="field full"><label htmlFor="new-purpose">Purpose and context</label><textarea className="field-control" id="new-purpose" name="purpose" required minLength={3} maxLength={4000} placeholder="Why does this work matter? Add context the next person will need." /></div>
           <div className="field"><label htmlFor="new-priority">Priority</label><select className="field-control" id="new-priority" name="priority" defaultValue="medium">{PRIORITY_OPTIONS.map((priority) => <option key={priority} value={priority}>{label(priority)}</option>)}</select></div>
           <div className="field"><label>Initial status</label><input className="field-control" disabled value="Open" /></div>
+          <div className="field full"><label htmlFor="new-due-at">Due date and time <span className="optional-label">Optional</span></label><input type="datetime-local" className="field-control" id="new-due-at" name="due_at" step="60" aria-describedby="new-due-hint" /><small className="field-hint" id="new-due-hint">Your time zone: {timeZone.replaceAll("_", " ")}. Leave empty if there is no deadline.</small></div>
         </div></div>
         <div className="modal-footer"><button className="secondary-button" disabled={createBusy} onClick={() => setCreateOpen(false)} type="button">Cancel</button><button className="primary-button lime" disabled={createBusy} type="submit"><Plus size={14} /> {createBusy ? "Creating…" : "Create work item"}</button></div>
       </form></Modal>}
@@ -433,7 +467,10 @@ export default function WorkbenchPage() {
         <div className="modal-header"><div><div className="modal-kicker">Work item · {detail ? `Version ${detail.version}` : "Loading"}</div><h2 className="modal-heading">Item details</h2></div><button className="icon-button" onClick={() => setSelectedId("")} type="button" aria-label="Close"><X size={15} /></button></div>
         {detailLoading && !detail ? <div className="detail-loading"><div className="spinner" /></div> : detailError && !detail ? <div className="modal-body"><div className="inline-error" style={{ margin: 0 }}>{detailError}<button className="secondary-button" style={{ marginLeft: 8 }} onClick={() => setDetailReload((value) => value + 1)} type="button">Retry</button></div></div> : detail && <>
           <div className="modal-body">
-            <div className="detail-intro"><span className="eyebrow">{selectedTeam?.name ?? "Team work"}</span><h3 className="detail-title">{detail.title}</h3><p className="detail-description">{detail.purpose}</p><div className="detail-meta"><span className={`status-pill status-${detail.status}`}>{label(detail.status)}</span><span className={`priority-pill priority-${detail.priority}`}>{label(detail.priority)} priority</span><span className="priority-pill priority-medium"><Clock3 size={11} /> Updated {shortDate(detail.updated_at)}</span></div></div>
+            <div className="detail-intro"><span className="eyebrow">{selectedTeam?.name ?? "Team work"}</span><h3 className="detail-title">{detail.title}</h3><p className="detail-description">{detail.purpose}</p><div className="detail-meta"><span className={`status-pill status-${detail.status}`}>{label(detail.status)}</span><span className={`priority-pill priority-${detail.priority}`}>{label(detail.priority)} priority</span></div>
+              <div className="detail-timestamps"><div><span>Created</span><Timestamp value={detail.created_at} /></div><div><span>Last updated</span><Timestamp value={detail.updated_at} /></div></div>
+              <ItemDeadline dueAt={detail.due_at} status={detail.status} detailed />
+            </div>
             <ItemWorkflow status={detail.status} history={detail.history} variant="detail" />
             <div className={`next-action next-action-${detail.status}`}><span className="next-action-icon">{detail.status === "done" ? <CheckCircle2 size={17} /> : <ArrowRight size={17} />}</span><div><strong>{detail.status === "done" ? "Work resolved" : "What happens next"}</strong><p>{detail.status === "done" ? "The outcome and decisions stay available in the history." : !detail.owner ? "Claim this item or ask a team lead to assign an owner." : detail.status === "blocked" ? "Add context about the blocker. Resume in progress when it is resolved." : detail.status === "in_review" ? "Record the review decision, then resolve or return to in progress." : detail.status === "open" ? "Start the investigation by moving this item to in progress." : "Keep the team informed. Send for review, resolve, or flag a blocker."}</p></div></div>
             {!detail.owner && detail.status !== "done" && <div className="claim-row"><span>This work item is open for someone to take.</span><button className="primary-button" disabled={saveBusy} onClick={claimItem} type="button"><UserRound size={13} /> Claim work</button></div>}
@@ -442,13 +479,14 @@ export default function WorkbenchPage() {
                 <div className="field"><label htmlFor="edit-status">Status</label><select className="field-control" id="edit-status" value={draft.status} disabled={!canEditSelected} onChange={(event) => setDraft((value) => ({ ...value, status: event.target.value as Status }))}><option value={detail.status}>{label(detail.status)}</option>{NEXT_STATUSES[detail.status].map((status) => <option key={status} value={status}>{label(status)}</option>)}</select></div>
                 <div className="field"><label htmlFor="edit-priority">Priority</label><select className="field-control" id="edit-priority" value={draft.priority} disabled={!canEditSelected} onChange={(event) => setDraft((value) => ({ ...value, priority: event.target.value as Priority }))}>{PRIORITY_OPTIONS.map((priority) => <option key={priority} value={priority}>{label(priority)}</option>)}</select></div>
                 <div className="field"><label htmlFor="edit-owner">Owner</label><select className="field-control" id="edit-owner" value={draft.owner_id} disabled={!canLead} onChange={(event) => setDraft((value) => ({ ...value, owner_id: event.target.value }))}><option value="">Unassigned</option>{selectedTeam?.members.map((member) => <option key={member.id} value={member.id}>{member.full_name}{member.id === user?.id ? " (you)" : ""}</option>)}</select></div>
+                <div className="field deadline-field"><label htmlFor="edit-due-at">Due date and time</label><div className="deadline-input-row"><input type="datetime-local" className="field-control" id="edit-due-at" value={draft.due_at} step="60" disabled={!canEditSelected} aria-describedby="edit-due-hint" onChange={(event) => setDraft((value) => ({ ...value, due_at: event.target.value }))} />{canEditSelected && draft.due_at && <button type="button" className="secondary-button" onClick={() => setDraft((value) => ({ ...value, due_at: "" }))}>Clear</button>}</div><small className="field-hint" id="edit-due-hint">{timeZone.replaceAll("_", " ")} · Optional. Clear and save to remove the deadline.</small></div>
               </div>
               {canEditSelected && <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 11 }}><button className="primary-button" disabled={saveBusy} onClick={saveDetails} type="button"><Check size={14} /> {saveBusy ? "Saving…" : "Save changes"}</button></div>}
             </div>
             {(detailError || detailConflict) && <div className="inline-error" role="alert" style={{ margin: "0 0 10px" }}>{detailConflict || detailError}</div>}
             <div className="detail-section"><div className="section-head"><strong>Updates & history</strong><span>{detail.history?.length ?? 0} recent events</span></div>
               <form className="comment-form" onSubmit={addComment}><input className="field-control" maxLength={2000} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Add context or a handoff note…" aria-label="Add a comment" /><button className="secondary-button" type="submit" disabled={commentBusy || !comment.trim()}><MessageCircle size={13} /> {commentBusy ? "Adding…" : "Add note"}</button></form>
-              <div className="history-list" style={{ marginTop: 12 }}>{detail.history?.map((event) => <div className="history-entry" key={event.id}><div className="history-dot">{event.event_type === "comment" ? <MessageCircle size={11} /> : event.event_type === "created" ? <Sparkles size={11} /> : <ArrowUpRight size={11} />}</div><div className="history-copy"><strong>{event.actor_name}</strong> {eventText(event)}<time>{new Date(event.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time></div></div>)}</div>
+              <div className="history-list" style={{ marginTop: 12 }}>{detail.history?.map((event) => <div className="history-entry" key={event.id}><div className="history-dot">{event.event_type === "comment" ? <MessageCircle size={11} /> : event.event_type === "created" ? <Sparkles size={11} /> : <ArrowUpRight size={11} />}</div><div className="history-copy"><strong>{event.actor_name}</strong> {eventText(event, timeZone)}<Timestamp value={event.created_at} /></div></div>)}</div>
               {detail.history_has_more && <button className="secondary-button load-history" type="button" disabled={historyBusy} onClick={loadOlderHistory}><Clock3 size={13} />{historyBusy ? "Loading…" : "Load older history"}</button>}
             </div>
           </div>

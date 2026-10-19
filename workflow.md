@@ -23,6 +23,7 @@ flowchart TD
     HasTeam -->|Yes| Queue[Open an admin team when available, otherwise your first team]
     Queue --> Map[See the selected team's graphical lifecycle and live status counts]
     Queue --> ItemPaths[See each work item's compact workflow path and highlighted current status]
+    Queue --> Clock[Read the live local date, time, and timezone]
 
     Map --> Overview[Review active, urgent, blocked, and unassigned counts]
     ItemPaths --> ChooseAction{What do you want to do?}
@@ -35,14 +36,14 @@ flowchart TD
     ChooseAction -->|Change view| Board[Switch between queue and status board]
     Board --> BoardScope[View the current filtered page grouped by state]
     BoardScope --> ChooseAction
-    ChooseAction -->|Search, filter, or page| Filter[Find work by text, status, priority, or owner]
+    ChooseAction -->|Search, filter, or page| Filter[Find work by text, status, priority, owner, or deadline]
     Filter --> FilteredQueue[Review the matching queue rows]
     FilteredQueue --> ChooseAction
-    ChooseAction -->|Create work| NewForm[Enter title, purpose, and priority]
+    ChooseAction -->|Create work| NewForm[Enter title, purpose, priority, and optional local due date/time]
     NewForm --> Create[Create the item in the selected team]
     Create --> Created[See the success message and initial history entry]
     Created --> Detail
-    ChooseAction -->|Open an item| Detail[Read item details, actual visited states, and update history]
+    ChooseAction -->|Open an item| Detail[Read details, deadlines, recorded stage times, and timestamped history]
 
     Detail --> ItemAction{Choose an action}
     ItemAction -->|Claim unassigned work| Claim[Claim the item]
@@ -60,7 +61,7 @@ flowchart TD
     Older --> Evidence[Expand the history and workflow evidence]
     Evidence --> Detail
 
-    ItemAction -->|Edit status, priority, or owner| Permission{Lead/admin, or owner editing allowed fields?}
+    ItemAction -->|Edit status, priority, deadline, or owner| Permission{Lead/admin, or owner editing allowed fields?}
     Permission -->|No| ReadOnly[Fields remain read-only]
     ReadOnly --> Detail
     Permission -->|Yes| Save[Save changes using the item's current version]
@@ -79,8 +80,8 @@ flowchart TD
 
 | Team role | User-visible access |
 | --- | --- |
-| Member | View team work, create items, add notes, claim unassigned work, and update status or priority on items they own. |
-| Lead | Member actions, plus update status or priority on team items and reassign them to team members. |
+| Member | View team work, create items with optional deadlines, add notes, claim unassigned work, and update status, priority, or deadline on items they own. |
+| Lead | Member actions, plus update status, priority, or deadline on team items and reassign them to team members. |
 | Admin | Same work-item editing and reassignment ability as a lead for that team. |
 
 The server checks membership and role on every protected request. Disabling a control in the browser is only a usability aid; it is not the authorization boundary.
@@ -106,6 +107,28 @@ The team diagram counts all work in the selected team. Queue and board views app
 
 The compact row graphic marks the current status. The expanded item diagram uses actual loaded history to mark visited states. A direct move from in-progress to done does not imply that review occurred. Details initially load the latest 100 events; **Load older** fetches earlier pages through a stable cursor. The current status is always shown even when its older history has not been loaded. The status description explains the next action. `in_review` is a review stage rather than an enforced separate-approver policy.
 
+### Time and deadline workflow
+
+The workspace clock shows the browser's local date, time, and timezone and ticks each second. Created, updated, activity, and recorded stage timestamps use the same local display convention; relative labels and deadline warnings recalculate every 30 seconds. The workflow diagram only labels stage times supported by loaded history; older visits may become visible after loading earlier events.
+
+```mermaid
+flowchart LR
+    Local[Choose an optional local due date and time] --> UTC[Browser converts it to a UTC instant]
+    UTC --> Validate[API requires a timezone offset and normalizes UTC]
+    Validate --> Save[Save due_at with version check and audit event]
+    Save --> Render[Display deadline in browser timezone]
+    Render --> State{Item completed?}
+    State -->|Yes| Complete[Show deadline without timing warnings]
+    State -->|No| Check{Compare deadline with current browser time}
+    Check -->|Past| Overdue[Overdue]
+    Check -->|Within next 24 hours| Soon[Due soon]
+    Check -->|Later or unset| Normal[Scheduled or no deadline]
+```
+
+An owner or team lead/admin can change or clear a deadline in details. Deadline changes follow normal stale-edit handling. Timing warnings are display cues; no email, background reminder, escalation, or automatic status change is scheduled.
+
+The **Overdue**, **Due within 24h**, **With due date**, and **No due date** filters run in SQL before pagination. Time-sensitive filters use the server clock and refresh every 60 seconds while selected; displayed warnings use the browser clock. **With due date** includes any dated item, including completed or overdue work. Timezone follows the OS/browser with no selector. A new repeated autumn daylight-saving time resolves to the earlier occurrence; a skipped spring time is rejected. An unchanged deadline keeps its original instant when saving another field.
+
 ## 2. Developer workflow: files, requests, and data
 
 This diagram traces the production-style runtime from startup through a browser request. Frontend calls use the same origin `/api` URL in the Compose build, so Caddy can route the page and API without exposing the internal services directly.
@@ -121,8 +144,9 @@ flowchart TB
         Entry --> AlembicEnv[backend/migrations/env.py<br/>loads DATABASE_URL and model metadata]
         AlembicEnv --> Rev1[0001_initial_schema.py<br/>teams, users, memberships, work_items, activity]
         Rev1 --> Rev2[0002_idempotency_records.py<br/>idempotency_records]
-        Rev2 --> Pg
-        Rev2 --> ApiStart[backend/app/main.py<br/>create_app, middleware, lifespan]
+        Rev2 --> Rev3[0003_work_item_deadlines.py<br/>revision 0003_deadlines: nullable work_items.due_at]
+        Rev3 --> Pg
+        Rev3 --> ApiStart[backend/app/main.py<br/>create_app, middleware, lifespan]
         ApiStart --> Ready[Readiness checks PostgreSQL and Redis]
         Compose --> WebImage[frontend/Dockerfile<br/>Next.js standalone build]
         WebImage --> WebServer[Next.js server on internal port 3000]
@@ -141,6 +165,10 @@ flowchart TB
         WorkPage --> ItemWorkflow[frontend/components/item-workflow.tsx<br/>per-item path in queue and full path in details]
         WorkPage --> WorkBoard[frontend/components/work-board.tsx<br/>current filtered page grouped by status]
         WorkPage --> Dialog[frontend/components/modal.tsx<br/>dialog focus, keyboard access, and focus return]
+        WorkPage --> TimeSystem[frontend/components/time-system.tsx<br/>live workspace clock and local timestamps]
+        WorkPage --> Deadline[frontend/components/item-deadline.tsx<br/>deadline and timing indicators]
+        TimeSystem --> DateUtils[frontend/lib/datetime.ts<br/>UTC conversion and local display]
+        Deadline --> DateUtils
         Types[frontend/lib/types.ts<br/>TypeScript API data contracts] -. types .-> LoginPage
         Types -. types .-> WorkPage
         LoginPage --> Client[frontend/lib/api.ts<br/>fetch, credentials include, JSON, ApiError]
@@ -211,9 +239,10 @@ flowchart TB
 | Flow step | Main files | Responsibility |
 | --- | --- | --- |
 | Build and route web requests | `docker-compose.yml`, `frontend/Dockerfile`, `frontend/next.config.ts`, `deploy/Caddyfile` | Run the web/API/data services; build the Next standalone server; route browser pages and `/api/*` traffic. |
-| Start API and prepare schema | `backend/entrypoint.sh`, `backend/migrations/env.py`, `backend/migrations/versions/0001_initial_schema.py`, `backend/migrations/versions/0002_idempotency_records.py` | Apply ordered schema migrations before FastAPI starts. |
+| Start API and prepare schema | `backend/entrypoint.sh`, `backend/migrations/env.py`, `backend/migrations/versions/0003_work_item_deadlines.py` | Apply ordered schema migrations before FastAPI starts; revision `0003_deadlines` adds nullable `work_items.due_at`. |
 | Render sign-in and queue | `frontend/app/layout.tsx`, `frontend/app/login/page.tsx`, `frontend/app/page.tsx`, `frontend/app/globals.css` | Shared shell, demo sign-in UI, queue experience, dialogs, filters, error states, and presentation styling. |
 | Explain work graphically | `frontend/components/workflow-map.tsx`, `frontend/components/item-workflow.tsx`, `frontend/components/work-board.tsx` | Team totals and status navigation, item-specific history evidence, and a board of the current filtered page. |
+| Show dates and deadlines | `frontend/lib/datetime.ts`, `frontend/components/time-system.tsx`, `frontend/components/item-deadline.tsx`, `frontend/components/item-workflow.tsx` | Convert local form values to UTC, format local timestamps and clock, classify deadline warnings, and label recorded workflow-stage times. |
 | Manage dialog access | `frontend/components/modal.tsx` | Dialog semantics, keyboard focus, Escape dismissal, focus trapping, and focus return to the trigger. |
 | Send and type API calls | `frontend/lib/api.ts`, `frontend/lib/types.ts` | Include cookies, encode JSON, translate HTTP failures to `ApiError`, and define frontend payload types. |
 | Authenticate and authorize | `backend/app/main.py`, `backend/app/security.py`, `backend/app/schemas.py` | Validate request bodies, verify passwords, check signed sessions and team roles, then execute API routes. |
@@ -229,6 +258,7 @@ flowchart TB
 | --- | --- | --- |
 | Create item | `work_items`, `activity`, `idempotency_records` | A user-scoped key makes network retries safe; replaying the same payload returns the original result. |
 | Edit item | `work_items`, `activity` | `expected_version` gates an atomic update; successful updates increment `version`, stale updates return HTTP 409. |
+| Set, change, or clear deadline | Nullable `work_items.due_at`, `activity` | Timezone-aware input is normalized to UTC; normal owner/lead authorization, expected version, and transactional audit apply. |
 | Claim item | `work_items`, `activity` | An atomic update requires no current owner and the expected version; only one concurrent claimant wins. |
 | Add note | `activity`; also updates `work_items.updated_at` | Notes are append-only history events associated with the actor and item. |
 | List queue / summary | Read `work_items`, `memberships`, `teams`, `users` | Team membership is required; filters and pagination are applied in the API. |
@@ -241,11 +271,15 @@ flowchart TB
 | Start/end a session | `POST /api/auth/login`, `POST /api/auth/logout` | Signed HTTP-only cookie; invalid credentials are rejected. |
 | Read identity and teams | `GET /api/auth/me`, `GET /api/teams` | Current user and only their team memberships. |
 | Read overview | `GET /api/teams/{team_id}/summary` | Whole-team counts; membership is required. |
-| Read a filtered page | `GET /api/items?team_id=...&q=...&status=...&priority=...&owner=...&page=1&page_size=12` | Bounded SQL query; page size cannot exceed 50. `%` and `_` in a query are literal text. |
+| Read a filtered page | `GET /api/items?team_id=...&q=...&status=...&priority=...&owner=...&deadline=...&page=1&page_size=12` | Bounded SQL query; page size cannot exceed 50. `%` and `_` in a query are literal text. |
 | Create work | `POST /api/items` with `Idempotency-Key` | HTTP 201 for first creation and identical replay; 409 if the key is reused for different content. |
 | Read details/history | `GET /api/items/{id}`, `GET /api/items/{id}/history` | Latest bounded history plus earlier pages on demand; other teams' items return 404. |
 | Edit or claim | `PATCH /api/items/{id}`, `POST /api/items/{id}/claim` | Expected version required; stale submissions return 409. Invalid status moves return 422. |
 | Collaborate | `POST /api/items/{id}/comments` | Appends a note and updates recency; does not increment the edit version. |
+
+Create and PATCH payloads accept optional `due_at` in ISO 8601 with an explicit offset. Omit it on create for no deadline; PATCH with `due_at: null` clears it. An offset-free datetime is rejected instead of being interpreted in the server's timezone.
+
+The optional list query `deadline` accepts `overdue` (active and past due), `due_soon` (active and due from now through 24 hours), `scheduled` (any non-null deadline), or `none` (null deadline). Time comparisons use the API's current UTC time; results and counts share the same filter and bounded pagination.
 
 The API returns structured failures with a code/message where a business rule fails. The browser shows permission, validation, network, and conflict feedback. API writes and their audit entries commit together; a failed transaction rolls both back. List requests batch owner/creator records rather than issuing one lookup for every card.
 
@@ -299,6 +333,8 @@ The interactive report is generated at `frontend/playwright-report/`. Every scen
 Generated output is ignored by Git. Traces may contain authenticated network/session data; keep evidence from real deployments private and do not add it to the public source repository.
 
 ## 4. Running the flows
+
+For an existing Docker installation, back up the database and run `docker compose up --build -d`; the API entrypoint applies the nullable deadline migration before startup. For a local Python API, run `python -m alembic upgrade head` from `backend/` before restarting it. Existing items retain no deadline until edited.
 
 - **Present the live reviewer application:** open `http://localhost:8080/login`, choose a demo tile, then use the team selector and work queue.
 - **Run automated Chromium tests:** from `frontend/`, run `npm run e2e`.

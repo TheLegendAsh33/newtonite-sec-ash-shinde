@@ -47,6 +47,8 @@ To stop the stack while retaining data, use `docker compose down`. Database volu
 - Interactive team workflow map with live status counts and click-to-filter queue navigation.
 - Queue and status-board views of the same filtered, paginated work.
 - Compact current-status graphics and a detailed per-item diagram backed by actual loaded history.
+- Live workspace clock with the browser's timezone; clear created, updated, activity, and recorded workflow-stage timestamps.
+- Optional due dates and times on work items, with due-soon and overdue indicators across the queue, board, and details.
 - Responsive layouts, keyboard-accessible dialogs, and an explicit next-action description for each status.
 - Team-scoped roles (`member`, `lead`, `admin`) enforced on API requests.
 - Signed, HTTP-only session cookies and salted PBKDF2 password hashes.
@@ -54,6 +56,12 @@ To stop the stack while retaining data, use `docker compose down`. Database volu
 - Retry-safe work-item creation with per-user idempotency keys.
 - Comments and work-item changes in an append-only activity history.
 - Loading, empty, validation, permission, conflict, and error feedback in the UI.
+
+### Dates, times, and deadlines
+
+The workspace clock and item timestamps use your browser's local timezone. Create an item with an optional due date and time; its owner or a team lead/admin can change or clear the deadline in details. Local form values are converted to UTC for the API. API datetime inputs must include a UTC offset (for example, `2026-10-19T12:00:00+05:30`); stored values are normalized to UTC.
+
+Active work due within the next 24 hours is **Due within 24h**; an active item past its deadline is **Overdue**. Completed items are exempt from these warnings. Filter the queue or board by **Overdue**, **Due within 24h**, **With due date**, or **No due date**; these filters run on the server before pagination. Overdue and due-within-24-hours results refresh every 60 seconds while selected; relative labels and warnings recalculate every 30 seconds, and the clock ticks each second. Deadline edits use the same permissions, version checks, and transactional activity history as other item edits. No reminders or background jobs are scheduled.
 
 ## Local development
 
@@ -72,6 +80,8 @@ uvicorn app.main:app --reload --port 8000 --env-file .env
 ```
 
 For a new local database, `alembic upgrade head` creates the schema. If you already have a database from the first challenge version, back it up and mark its existing schema once with `python -m alembic stamp 0001_initial`; do not run the initial migration against tables that already exist. With `SEED_DEMO_DATA=true`, the development server adds missing reviewer accounts, teams, and sample work while preserving existing account passwords and work-item changes.
+
+After updating this project, run `python -m alembic upgrade head` from `backend/` before restarting the local API. Migration `0003_deadlines` (`0003_work_item_deadlines.py`) adds a nullable `due_at` column, so existing items keep no deadline until one is set. For an existing Docker installation, back up the database and run `docker compose up --build -d`; the API entrypoint applies pending migrations before serving requests.
 
 API health and readiness are available at `http://localhost:8000/api/health/live` and `http://localhost:8000/api/health/ready`. Interactive API docs are available at `http://localhost:8000/docs` in development.
 
@@ -201,7 +211,7 @@ GitHub Actions runs the API checks, applies migrations to PostgreSQL, audits dep
 
 | Challenge concern | Implementation and review evidence |
 | --- | --- |
-| Understand the work, its importance, owner, state, and next action | Purpose, priority, owner, explicit statuses, overview counts, per-item graphical workflow, and activity history. |
+| Understand the work, its importance, owner, state, and next action | Purpose, priority, owner, explicit statuses, optional deadlines with timing indicators, overview counts, per-item graphical workflow, and timestamped activity history. |
 | Multiple teams and responsibilities | Membership-scoped `member`, `lead`, and `admin` roles; Morgan demonstrates different roles across two teams. |
 | Enforced authorization | API membership checks on reads and writes; owners and elevated roles have distinct mutation permissions; other teams' items return 404. |
 | Simultaneous claims | Conditional SQL update requiring no owner and the expected version; exactly one winner and one claim event. |
@@ -224,6 +234,7 @@ The brief offers examples of correctness problems rather than a fixed list of op
 - Health checks and container logs are included; centralized log retention, metrics dashboards, paging, and load/capacity tests must be attached to the target hosting platform.
 - Search is case-insensitive substring matching. Larger PostgreSQL deployments should add full-text or trigram search indexes based on observed query load.
 - There is no dedicated approval policy, notification worker, email delivery, attachment upload, or comment editing/deletion. Notes and the review stage support coordination, with the decision recorded in the history.
+- Timezone follows the OS/browser; there is no timezone selector. Local warnings use the browser clock, while deadline filters use server time. At daylight-saving changes, a newly entered repeated autumn time chooses the earlier occurrence, and a nonexistent spring time is rejected. Saving other fields preserves an unchanged deadline's exact instant. Deadlines do not trigger scheduled notifications, escalations, or automatic status changes.
 - The browser refreshes after actions and explicit refreshes. Push updates, live presence, automatic merge of conflicting edits, and offline operation are not implemented.
 - Offset pagination and substring search are deliberately simple; very deep queues need keyset pagination, measured search indexes, and load testing before claiming the target concurrency is proven.
 - The application retains audit and idempotency rows indefinitely; archival, retention policy, and disaster-recovery targets remain deployment decisions.

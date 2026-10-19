@@ -57,6 +57,7 @@ class WorkItem(Base):
         Index("ix_items_team_status_updated", "team_id", "status", "updated_at"),
         Index("ix_items_team_priority", "team_id", "priority"),
         Index("ix_items_team_owner", "team_id", "owner_id"),
+        Index("ix_items_team_due", "team_id", "due_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -68,6 +69,7 @@ class WorkItem(Base):
     owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc, nullable=False)
 

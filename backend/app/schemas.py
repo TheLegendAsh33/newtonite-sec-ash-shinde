@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictModel(BaseModel):
@@ -17,6 +18,12 @@ class ItemCreate(StrictModel):
     title: str = Field(min_length=3, max_length=180)
     purpose: str = Field(min_length=3, max_length=4000)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
+    due_at: AwareDatetime | None = None
+
+    @field_validator("due_at")
+    @classmethod
+    def normalize_due_at(cls, value: datetime | None) -> datetime | None:
+        return value.astimezone(timezone.utc) if value is not None else None
 
     @field_validator("title", "purpose", mode="before")
     @classmethod
@@ -36,6 +43,12 @@ class ItemUpdate(StrictModel):
     status: Literal["open", "in_progress", "blocked", "in_review", "done"] | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
     owner_id: str | None = None
+    due_at: AwareDatetime | None = None
+
+    @field_validator("due_at")
+    @classmethod
+    def normalize_due_at(cls, value: datetime | None) -> datetime | None:
+        return value.astimezone(timezone.utc) if value is not None else None
 
     @field_validator("title", "purpose", mode="before")
     @classmethod

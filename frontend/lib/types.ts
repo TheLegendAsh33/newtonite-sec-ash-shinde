@@ -25,6 +25,7 @@ export type WorkItem = {
   version: number;
   created_at: string;
   updated_at: string;
+  due_at: string | null;
   history?: Activity[];
   history_has_more?: boolean;
   history_next_cursor?: string | null;

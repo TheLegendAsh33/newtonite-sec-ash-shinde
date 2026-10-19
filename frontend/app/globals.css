@@ -158,7 +158,7 @@ a { color: inherit; text-decoration: none; }
 .item-type-mark { display: grid; width: 29px; height: 29px; flex: 0 0 auto; place-items: center; border: 1px solid #e4eae3; border-radius: 8px; color: #74856f; background: #f7faf5; }
 .item-title-copy { min-width: 0; }
 .item-title-copy strong { display: block; overflow: hidden; color: #293b38; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.item-title-copy span { display: block; display: -webkit-box; max-width: 430px; margin-top: 5px; overflow: hidden; color: #899692; font-size: 10px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
+.item-title-copy > span:not(.item-deadline) { display: block; display: -webkit-box; max-width: 430px; margin-top: 5px; overflow: hidden; color: #899692; font-size: 10px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
 .status-pill, .priority-pill { display: inline-flex; min-height: 24px; align-items: center; gap: 6px; padding: 0 8px; border-radius: 6px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .status-pill::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; opacity: .8; }
 .status-open { color: #62736d; background: #f0f3f1; }
@@ -484,4 +484,59 @@ button:focus-visible, a:focus-visible { outline: 3px solid #86aa5c; outline-offs
   .comment-form { flex-wrap: wrap; }
   .comment-form .field-control { min-width: 100%; }
   .claim-row { align-items: flex-start; flex-direction: column; }
+}
+
+/* Dates stay readable without crowding the workflow graphics. */
+.heading-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 13px; flex: 0 0 auto; }
+.workspace-clock { display: flex; align-items: center; gap: 10px; color: #536b4b; }
+.workspace-clock-icon { display: grid; place-items: center; width: 35px; height: 35px; border: 1px solid #dfe7d6; border-radius: 10px; background: #eef4e7; }
+.workspace-clock-date { display: block; margin-bottom: 3px; color: #829075; font-size: 10px; }
+.workspace-clock-reading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.workspace-clock-reading time { color: #3c5735; font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.workspace-clock-reading > span { color: #8a987d; font-size: 9px; overflow-wrap: anywhere; }
+.panel-toolbar { align-items: stretch; flex-direction: column; }
+.panel-view-controls { justify-content: space-between; }
+.filters { flex-wrap: wrap; }
+.filters .search-wrap { flex: 1; min-width: 180px; }
+.item-title-copy > .item-updated { color: #8b9980; font-size: 9px; }
+.item-title-copy > .item-deadline { margin-top: 6px; }
+.item-deadline { display: inline-flex; max-width: 100%; align-items: flex-start; gap: 5px; color: #75876a; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.item-deadline > svg { flex: 0 0 auto; margin-top: 2px; }
+.item-deadline strong, .item-title-copy .item-deadline strong { display: inline; color: inherit; font-size: inherit; font-weight: 650; white-space: normal; }
+.item-title-copy .item-deadline span { color: inherit; font-size: inherit; }
+.deadline-overdue, .item-title-copy .deadline-overdue { color: #ac4c3d; }
+.deadline-soon, .item-title-copy .deadline-soon { color: #956420; }
+.deadline-complete { color: #5f8651; }
+.deadline-detailed { width: 100%; padding: 12px 13px; margin-top: 14px; border: 1px solid #e2e9dc; border-radius: 10px; background: #f8faf4; font-size: 11px; }
+.deadline-detailed.deadline-overdue { border-color: #efd7cf; background: #fff8f5; }
+.deadline-detailed.deadline-soon { border-color: #eaddc2; background: #fffaf0; }
+.deadline-detailed small { display: block; margin-top: 2px; color: inherit; opacity: .8; font-size: 10px; }
+.deadline-none { color: #8b9980; }
+.detail-timestamps { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 15px; }
+.detail-timestamps > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.detail-timestamps span { color: #96a18a; font-size: 9px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
+.detail-timestamps time { color: #738568; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.journey-stage > .journey-stage-time { margin-top: 7px; color: #6f8560; font-size: 9px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.deadline-field { grid-column: 1 / -1; margin-top: 6px; }
+.deadline-input-row { display: flex; gap: 8px; }
+.deadline-input-row input { flex: 1; min-width: 0; }
+input[type="datetime-local"] { min-width: 0; font-variant-numeric: tabular-nums; }
+.optional-label { margin-left: 5px; color: #a0ab94; font-size: 9px; font-weight: 400; }
+.board-card > .item-deadline { display: flex; margin-bottom: 11px; font-size: 9px; }
+.board-card-footer > span { flex-wrap: wrap; }
+.workspace-footnote { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 18px; margin-top: 13px; color: #93a187; font-size: 9px; }
+.workspace-footnote > span { display: inline-flex; align-items: center; gap: 5px; }
+@media (max-width: 760px) {
+  .heading-actions { width: 100%; align-items: flex-start; gap: 15px; }
+  .workspace-clock { max-width: 100%; }
+  .workspace-clock-reading { gap: 6px; }
+  .filters .search-wrap { flex: 1 1 100%; min-width: 0; }
+  .filters .filter-select { flex: 1 1 calc(50% - 6px); width: auto; min-width: 0; }
+  .item-title-copy > span:not(.item-deadline) { max-width: none; }
+  .item-title-copy > .item-updated { font-size: 9px; }
+  .item-title-copy > .item-deadline { font-size: 9px; line-height: 1.5; }
+  .detail-timestamps { grid-template-columns: 1fr; gap: 10px; }
+  .deadline-input-row { flex-wrap: wrap; }
+  .deadline-input-row input { flex: 1 1 180px; }
+  .workspace-footnote { line-height: 1.6; }
 }
